@@ -14,6 +14,7 @@ check_data = {}
 url = "http://localhost/render/?"
 graph = nil
 check_number = 3
+overrides = {}
 
 opt = OptionParser.new
 
@@ -35,6 +36,18 @@ end
 
 opt.on("--check [NUM]", Integer, "Number of past data items to check") do |v|
   check_number = v
+end
+
+opt.on("--property key1=value1[,value2]", "Override the property key1 with the given value or list of values") do |v|
+  key, value = v.split('=', 2)
+  raise OptionParser::InvalidArgument.new('Value is empty') if (value == nil or value.empty?)  
+  key.strip!
+  value.strip!
+  
+  if value.include? ','
+     value = value.split(',').map { |x| x.strip }
+  end
+  overrides[key.to_sym] = value
 end
 
 opt.parse!
@@ -89,7 +102,7 @@ def print_and_exit(results, code)
 end
 
 
-graphite = GraphiteGraph.new(graph)
+graphite = GraphiteGraph.new(graph, overrides)
 
 uri = URI.parse("%s?%s" % [ url, graphite.url(:json) ])
 
