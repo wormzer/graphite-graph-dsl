@@ -15,6 +15,7 @@ url = "http://localhost/render/?"
 graph = nil
 check_number = 3
 overrides = {}
+override_aliases = false
 
 opt = OptionParser.new
 
@@ -48,6 +49,10 @@ opt.on("--property key1=value1[,value2]", "Override the property key1 with the g
      value = value.split(',').map { |x| x.strip }
   end
   overrides[key.to_sym] = value
+end
+
+opt.on("--[no-]override-aliases", "Override field aliases with field id (default false)") do |v|
+  override_aliases = v
 end
 
 opt.parse!
@@ -104,7 +109,10 @@ end
 
 graphite = GraphiteGraph.new(graph, overrides)
 
-uri = URI.parse("%s?%s" % [ url, graphite.url(:json) ])
+if override_aliases
+  graphite.targets.each { |name, attrs| attrs[:alias] = name }
+end
+uri = URI.parse("%s?%s" % [ url, graphite.url(format = :json) ])
 
 json = Net::HTTP.get_response(uri)
 
