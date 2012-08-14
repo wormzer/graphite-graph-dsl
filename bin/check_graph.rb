@@ -197,6 +197,14 @@ Options:
       options[:overrides][key.to_sym] = value
     end
 
+    opts.on("--include field1,field2,field3", Array, "Only check the listed fields") do |list|
+      options[:include] = list
+    end
+
+    opts.on("--exclude field1,field2,field3", Array, "Exclude listed fields") do |list|
+      options[:exclude] = list
+    end
+
     opts.on("--[no-]override-aliases", "Override field aliases with field id (default false)") do |v|
       options[:override_aliases] = v
     end
@@ -248,6 +256,8 @@ def load_graphite(graphite, options)
     if options[:threshold_fields].include?(d["target"])
       threshold_data[ d["target"] ] = d["datapoints"].last(options[:check_number]).map{|i| i.first}
     else
+      next if options[:include] and not options[:include].include?(d["target"])
+      next if options[:exclude] and options[:exclude].include?(d["target"])
       check_data[ d["target"] ] = d["datapoints"].last(options[:check_number]).map{|i| i.first}
     end
   end
