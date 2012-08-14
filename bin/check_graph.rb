@@ -45,7 +45,6 @@ class ConstantValueChecker < ValueChecker
     target_max = target_data.max
     target_min = target_data.min
 
-    puts "Comparing #{target_min} and #{target_max} with #{min} and #{max} for #{target_name}"
     fails = []
     if min and (target_min <= min)
       fails << "#{target_name} #{target_min} <= #{min}"
@@ -57,16 +56,62 @@ class ConstantValueChecker < ValueChecker
   end
 end
 
+class DataValueChecker < ValueChecker
+  attr_accessor :threshold_data, :name, :type
+  
+  def initialize(threshold_data, name, type, check_number)
+    if threshold_data == nil
+      raise(ArgumentError, "Missing threshold data '#{name}'")
+    end
+    # Get the first not null point as a first "last_value"
+    if (last_value = threshold_data.find { |x| not x.nil? }) == nil
+      raise(ArgumentError, "Missing threshold data '#{name}'")
+    end
+    
+    # Remove nulls
+    @threshold_data = (0..(check_number-1)).map { |index|
+      last_value = threshold_data[index] || last_value  
+    }
+    @name = name
+    @type = type
+  end
+
+  def check(data, target_name=nil)
+    
+    fails = []
+    data.each_with_index { |value, index|
+      case type 
+      when :min
+        if threshold_data[index] and value <= threshold_data[index]
+          fails << "#{target_name}:#{value} <= #{name}:#{threshold_data[index]}"
+          break
+        end  
+      when :max
+        if threshold_data[index] and value >= threshold_data[index]
+          fails << "#{target_name}:#{value} >= #{name}:#{threshold_data[index]}"
+          break
+        end
+      end  
+    }            
+    fails
+  end
+end
+
 def parse_options
   # Default values
   options = {
     :crits => [],
     :warns => [],
+    :threshold_fields => [ "crit_0", "crit_1", "warn_0", "warn_1"],
     :check_data => {},
     :url => "http://localhost/render/?",
     :check_number => 3,
     :overrides => {},
-    :override_aliases => false
+    :override_aliases => false,
+    :thresholds => {
+      :critical => {:max => [], :min => []},
+      :warning => {:max => [], :min => []}
+    }
   }
 
   opts = OptionParser.new do |opts|
@@ -80,43 +125,63 @@ Check the data on graphite
 Options:
     }
 
-    opts.on("--graphite [URL]", "Base URL for the Graphite installation") do |v|
+    opts.on("--graphite URL", "Base URL for the Graphite installation") do |v|
       options[:url] = v
     end
 
-    opts.on("--graph [GRAPH]", "Graph defintition") do |v|
+    opts.on("--graph GRAPH", "Graph defintition") do |v|
       options[:graph] = v
       unless options[:graph] && File.exists?(options[:graph])
         raise OptionParser::InvalidOption.new("Can't find graph defintion #{options[:graph]}")
       end
     end
 
-    opts.on("--warning [WARN]", "Warning threshold, can be specified multiple times") do |v|
+    opts.on("--warning WARNING", Float, "Warning threshold, can be specified multiple times") do |v|
       options[:warns] << Float(v)
     end
 
-    opts.on("--critical [CRITICAL]", "Critical threshold, can be specified multiple times") do |v|
-      options[:crits] << Float(v)
-    end
-
-    opts.on("--critical-max [WARN]", "Maximum critical threshold") do |v|
-      options[:crit_max] = Float(v)
-    end
-
-    opts.on("--critical-min [WARN]", "Minimun critical threshold") do |v|
-      options[:crit_min] = Float(v)
-    end
-
-    opts.on("--warning-max [WARN]", "Maximum warning threshold") do |v|
+    opts.on("--warning-max WARNING", Float, "Maximum warning threshold") do |v|
       options[:warn_max] = Float(v)
     end
 
-    opts.on("--warning-min [WARN]", "Minimun warning threshold") do |v|
+    opts.on("--warning-min WARNING", Float, "Minimun warning threshold") do |v|
       options[:warn_min] = Float(v)
     end
 
-    opts.on("--check [NUM]", Integer, "Number of past data items to check") do |v|
+    opts.on("--critical CRITICAL", Float, "Critical threshold, can be specified multiple times") do |v|
+      options[:crits] << Float(v)
+    end
+
+    opts.on("--critical-max CRITICAL", Float, "Maximum critical threshold") do |v|
+      options[:crit_max] = Float(v)
+    end
+
+    opts.on("--critical-min CRITICAL", Float, "Minimun critical threshold") do |v|
+      options[:crit_min] = Float(v)
+    end
+
+    opts.on("--check NUMBER", Integer, "Number of past data items to check") do |v|
       options[:check_number] = v
+    end
+
+    opts.on("--critical-max-field [FIELD]", "Use the a graph field as critical maximum (default crit_0). Can be repeated.") do |v|
+      options[:thresholds][:critical][:max] << v || "crit_0"
+      options[:threshold_fields] << v if v 
+    end
+
+    opts.on("--critical-min-field [FIELD]", "Use the a graph field as critical minimun (default crit_1). Can be repeated.") do |v|
+      options[:thresholds][:critical][:min] << v || "crit_0"
+      options[:threshold_fields] << v if v 
+    end
+
+    opts.on("--warning-max-field [FIELD]", "Use the a graph field as warning maximum (default crit_0). Can be repeated.") do |v|
+      options[:thresholds][:warning][:max] << v || "crit_0"
+      options[:threshold_fields] << v if v 
+    end
+
+    opts.on("--warning-min-field [FIELD]", "Use the a graph field as warning minimun (default crit_1). Can be repeated.") do |v|
+      options[:thresholds][:warning][:min] << v || "crit_0"
+      options[:threshold_fields] << v if v 
     end
 
     opts.on("--property key1=value1[,value2]", "Override the property key1 with the given value or list of values") do |v|
@@ -150,8 +215,14 @@ def init_graphite(options)
   graphite = GraphiteGraph.new(options[:graph], options[:overrides])
 
   # Override aliases with the target_id if desired
+  # It is done here to avoid modify the graphite_graph code and
+  # allow use this plugin with the original gem.
   if options[:override_aliases]
-    graphite.targets.each { |name, attrs| attrs[:alias] = name }
+    graphite.targets.each { |name, attrs|
+      unless attrs[:alias] =~ /(warn|crit)_[01]$/ 
+        attrs[:alias] = name
+      end 
+    }
   end
 
   graphite
@@ -171,11 +242,11 @@ def load_graphite(graphite, options)
   end
 
   check_data = {}
-  limit_data = {}
+  threshold_data = {}
 
   data.each do |d|
-    if d["target"] =~ /(warn|crit)_[01]$/
-      limit_data[ d["target"] ] = d["datapoints"].last(options[:check_number]).map{|i| i.first}
+    if options[:threshold_fields].include?(d["target"])
+      threshold_data[ d["target"] ] = d["datapoints"].last(options[:check_number]).map{|i| i.first}
     else
       check_data[ d["target"] ] = d["datapoints"].last(options[:check_number]).map{|i| i.first}
     end
@@ -185,10 +256,10 @@ def load_graphite(graphite, options)
     status_exit "UNKNOWN: Graph does not have Data", 3
   end
 
-  [check_data, limit_data]
+  [check_data, threshold_data]
 end
 
-def generate_checks(options, graphite, check_data, limit_data)
+def generate_checks(options, graphite, check_data, threshold_data)
   checks = { :critical => [], :warning => []}
 
   crit_constant_max = options[:crit_max] || (options[:crits] || graphite.critical_threshold).max || nil
@@ -202,9 +273,14 @@ def generate_checks(options, graphite, check_data, limit_data)
   if (warn_constant_min or warn_constant_max)
     checks[:warning] << ConstantValueChecker.new(warn_constant_min, warn_constant_max)
   end
+  [[:critical,:max], [:critical,:min],[:warning,:max],[:warning,:min]].each { |level, type|
+    options[:thresholds][level][type].each { |field| 
+      checks[level] << DataValueChecker.new(threshold_data[field], field, type, options[:check_number])
+    }
+  }
 
   if checks[:critical].empty? and checks[:warning].empty?
-    status_exit "UNKNOWN: Graph does not have Warning or Critical information", 3
+    status_exit "UNKNOWN: Graph does not have Warning or Critical information to check", 3
   end
 
   checks
@@ -240,9 +316,9 @@ end
 
 options = parse_options
 graphite = init_graphite(options)
-check_data, limit_data = load_graphite(graphite, options)
+check_data, threshold_data = load_graphite(graphite, options)
 
-checks = generate_checks(options, graphite, check_data, limit_data)
+checks = generate_checks(options, graphite, check_data, threshold_data)
 
 
 if not (results = do_check_data(check_data, checks[:critical])).empty?
