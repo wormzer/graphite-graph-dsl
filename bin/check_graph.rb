@@ -22,9 +22,9 @@ class ValueChecker
 end
 
 class ConstantValueChecker < ValueChecker
-  attr_accessor :min, :max
+  attr_accessor :min, :max, :fail_number
   
-  def initialize(min, max)
+  def initialize(min, max, fail_number)
     if min == nil and max == nil
       raise(ArgumentError, "max or min must have value")
     end
@@ -38,28 +38,37 @@ class ConstantValueChecker < ValueChecker
     end
     @min = min
     @max = max
+    @fail_number = fail_number || 1
   end
 
   def check(data, target_name=nil)
-    target_data = data.reject {|x| not (x.is_a? Float or x.is_a? Integer)}
-    target_max = target_data.max
-    target_min = target_data.min
-
     fails = []
-    if min and (target_min <= min)
-      fails << "#{target_name} #{target_min} <= #{min}"
-    end
-    if max and (target_max >= max)
-      fails << "#{target_name} #{target_max} >= #{max}"
-    end
+    fail_count = 0
+    data.each { |value| 
+      next unless (value.is_a? Float or value.is_a? Integer)
+      if min and (value <= min)
+        fail_count+=1
+        if fail_count >= fail_number
+          fails << "#{target_name} #{value} <= #{min}" if fail_count >= fail_number
+          break
+        end 
+      end
+      if max and (value >= max)
+        fail_count+=1
+        if fail_count >= fail_number
+          fails << "#{target_name} #{value} >= #{max}" if fail_count >= fail_number
+          break
+        end
+      end
+    }
     fails
   end
 end
 
 class DataValueChecker < ValueChecker
-  attr_accessor :threshold_data, :name, :type
+  attr_accessor :threshold_data, :name, :type, :fail_number
   
-  def initialize(threshold_data, name, type, check_number)
+  def initialize(threshold_data, name, type, check_number, fail_number)
     if threshold_data == nil
       raise(ArgumentError, "Missing threshold data '#{name}'")
     end
@@ -74,22 +83,29 @@ class DataValueChecker < ValueChecker
     }
     @name = name
     @type = type
+    @fail_number = fail_number || 1
   end
 
   def check(data, target_name=nil)
-    
     fails = []
+    fail_count = 0
     data.each_with_index { |value, index|
       case type 
       when :min
         if threshold_data[index] and value <= threshold_data[index]
-          fails << "#{target_name}:#{value} <= #{name}:#{threshold_data[index]}"
-          break
+          fail_count+=1
+          if fail_count >= fail_number
+            fails << "#{target_name}:#{value} <= #{name}:#{threshold_data[index]}"
+            break
+          end
         end  
       when :max
         if threshold_data[index] and value >= threshold_data[index]
-          fails << "#{target_name}:#{value} >= #{name}:#{threshold_data[index]}"
-          break
+          fail_count+=1
+          if fail_count >= fail_number
+            fails << "#{target_name}:#{value} >= #{name}:#{threshold_data[index]}"
+            break
+          end
         end
       end  
     }            
@@ -106,6 +122,7 @@ def parse_options
     :check_data => {},
     :url => "http://localhost/render/?",
     :check_number => 3,
+    :fail_number => 1,
     :overrides => {},
     :override_aliases => false,
     :thresholds => {
@@ -162,6 +179,10 @@ Options:
 
     opts.on("--check NUMBER", Integer, "Number of past data items to check") do |v|
       options[:check_number] = v
+    end
+
+    opts.on("--fail-number NUMBER", Integer, "Maximun number of data items that cat pass the thresholds") do |v|
+      options[:fail_number] = v
     end
 
     opts.on("--critical-max-field [FIELD]", "Use the a graph field as critical maximum (default crit_0). Can be repeated.") do |v|
@@ -221,7 +242,7 @@ end
 
 def init_graphite(options)
   graphite = GraphiteGraph.new(options[:graph], options[:overrides])
-
+  
   # Override aliases with the target_id if desired
   # It is done here to avoid modify the graphite_graph code and
   # allow use this plugin with the original gem.
@@ -272,20 +293,21 @@ end
 def generate_checks(options, graphite, check_data, threshold_data)
   checks = { :critical => [], :warning => []}
 
-  crit_constant_max = options[:crit_max] || (options[:crits] || graphite.critical_threshold).max || nil
-  crit_constant_min = options[:crit_min] || (options[:crits] || graphite.critical_threshold).min || nil
-  warn_constant_max = options[:warn_max] || (options[:warns] || graphite.critical_threshold).max || nil
-  warn_constant_min = options[:warn_min] || (options[:warns] || graphite.critical_threshold).min || nil
+
+  crit_constant_max = options[:crit_max] || (options[:crits].max || graphite.critical_threshold.max) || nil
+  crit_constant_min = options[:crit_min] || (options[:crits].min || graphite.critical_threshold.min) || nil
+  warn_constant_max = options[:warn_max] || (options[:warns].max || graphite.warning_threshold.max) || nil
+  warn_constant_min = options[:warn_min] || (options[:warns].min || graphite.warning_threshold.min) || nil
 
   if (crit_constant_min or crit_constant_max)
-    checks[:critical] << ConstantValueChecker.new(crit_constant_min, crit_constant_max)
+    checks[:critical] << ConstantValueChecker.new(crit_constant_min, crit_constant_max, options[:fail_number])
   end
   if (warn_constant_min or warn_constant_max)
-    checks[:warning] << ConstantValueChecker.new(warn_constant_min, warn_constant_max)
+    checks[:warning] << ConstantValueChecker.new(warn_constant_min, warn_constant_max, options[:fail_number])
   end
   [[:critical,:max], [:critical,:min],[:warning,:max],[:warning,:min]].each { |level, type|
     options[:thresholds][level][type].each { |field| 
-      checks[level] << DataValueChecker.new(threshold_data[field], field, type, options[:check_number])
+      checks[level] << DataValueChecker.new(threshold_data[field], field, type, options[:check_number], options[:fail_number])
     }
   }
 
