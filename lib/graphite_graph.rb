@@ -47,6 +47,7 @@ class GraphiteGraph
                    :draw_null_as_zero => false,
                    :major_grid_line_color => nil,
                    :minor_grid_line_color => nil,
+                   :min_x_step => nil,
                    :area => :none,
                    :placeholders => nil}.merge(@overrides)
   end
@@ -281,6 +282,7 @@ class GraphiteGraph
     url_parts << "xFormat=#{properties[:xformat]}" if properties[:xformat]
     url_parts << "majorGridLineColor=#{properties[:major_grid_line_color]}" if properties[:major_grid_line_color]
     url_parts << "minorGridLineColor=#{properties[:minor_grid_line_color]}" if properties[:minor_grid_line_color]
+    url_parts << "minXStep=#{properties[:min_x_step]}" if properties[:min_x_step]
     url_parts << "bgcolor=#{properties[:background_color]}" if properties[:background_color]
     url_parts << "fgcolor=#{properties[:foreground_color]}" if properties[:foreground_color]
     url_parts << "vtitleRight=#{properties[:vtitle_right]}" if properties[:vtitle_right]
